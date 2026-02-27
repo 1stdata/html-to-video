@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTML to Video Renderer</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <h1>HTML &rarr; Video</h1>
+    <span class="subtitle">Render HTML animations to MP4</span>
+  </header>
+
+  <main>
+    <!-- Left sidebar: file list -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h2>Files</h2>
+        <div class="sidebar-header-actions">
+          <button class="upload-btn" id="btn-import-project">Import Project</button>
+          <label class="upload-btn" for="file-upload">+ Upload</label>
+          <input type="file" id="file-upload" accept=".html" multiple hidden>
+        </div>
+      </div>
+      <div id="project-banner" hidden>
+        <div class="project-banner-info">
+          <span id="project-name"></span>
+          <span id="project-stats"></span>
+        </div>
+        <div class="project-banner-actions">
+          <label class="small-btn" for="project-srt-upload">Upload SRT</label>
+          <input type="file" id="project-srt-upload" accept=".srt" hidden>
+        </div>
+      </div>
+      <div id="srt-match-summary" hidden></div>
+      <div id="pipeline-panel" hidden>
+        <div id="pipeline-buttons">
+          <button id="btn-analyze-all" class="pipeline-btn analyze-btn">Analyze All</button>
+          <button id="btn-render-all" class="pipeline-btn render-btn-pipeline">Render All (Option 1)</button>
+          <button id="btn-render-all-variants" class="pipeline-btn render-btn-pipeline" hidden>Render All Variants</button>
+        </div>
+        <div id="pipeline-status" hidden>
+          <div id="pipeline-phase"></div>
+          <div class="pipeline-progress-bar">
+            <div id="pipeline-progress-fill" class="pipeline-fill"></div>
+          </div>
+          <div id="pipeline-detail"></div>
+        </div>
+      </div>
+      <ul id="file-list"></ul>
+    </aside>
+
+    <!-- Import Project Modal -->
+    <div id="import-modal" class="modal-overlay" hidden>
+      <div class="modal-dialog">
+        <h3>Import Project Folder</h3>
+        <p class="hint">Enter the absolute path to a project folder containing SEGMENTO_XXXX subfolders.</p>
+        <input type="text" id="import-path-input" class="modal-input" placeholder="/Users/.../CreatorLuck_001" />
+        <div id="import-status" hidden></div>
+        <div class="modal-actions">
+          <button id="btn-import-cancel" class="small-btn">Cancel</button>
+          <button id="btn-import-confirm" class="primary-btn">Import</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center: preview + timing -->
+    <section id="workspace">
+      <div id="no-selection">
+        <p>Select an HTML file from the sidebar, or drop files into the <code>input/</code> folder.</p>
+      </div>
+
+      <div id="editor-panel" hidden>
+        <!-- Preview -->
+        <div id="preview-section">
+          <div class="section-header">
+            <h3>Preview</h3>
+            <span id="beat-info"></span>
+            <button id="btn-analyze" class="small-btn">Re-analyze</button>
+          </div>
+          <div id="preview-container">
+            <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin"></iframe>
+          </div>
+          <div id="preview-controls">
+            <button id="btn-click-preview">Click (advance)</button>
+            <button id="btn-reset-preview">Reset</button>
+            <span id="click-counter">Clicks: 0</span>
+          </div>
+        </div>
+
+        <!-- Segment Script -->
+        <div id="script-section" hidden>
+          <div class="section-header">
+            <h3>Script</h3>
+            <span id="script-segment-label"></span>
+            <span id="script-time-range"></span>
+          </div>
+          <div id="script-content"></div>
+        </div>
+
+        <!-- Timing -->
+        <div id="timing-section">
+          <div class="section-header">
+            <h3>Beat Timing</h3>
+            <div class="timing-tabs">
+              <button class="tab active" data-tab="manual">Manual</button>
+              <button class="tab" data-tab="srt">SRT Upload</button>
+            </div>
+          </div>
+
+          <div id="tab-manual" class="tab-content active">
+            <p class="hint">Enter timestamps in seconds, one per beat (comma-separated or one per line).</p>
+            <textarea id="timing-input" placeholder="0, 1.5, 3.2, 5.0, 7.8..."></textarea>
+            <button id="btn-save-timing" class="primary-btn">Save Timing</button>
+          </div>
+
+          <div id="tab-srt" class="tab-content" hidden>
+            <p class="hint">Upload an SRT caption file. Each cue's start time maps to a beat click.</p>
+            <div id="srt-drop-zone">
+              <p>Drop SRT file here or <label for="srt-upload" class="link">browse</label></p>
+              <input type="file" id="srt-upload" accept=".srt" hidden>
+            </div>
+            <div id="srt-result" hidden></div>
+          </div>
+
+          <div id="timing-preview" hidden>
+            <h4>Current Timing</h4>
+            <div id="timing-list"></div>
+          </div>
+        </div>
+
+        <!-- Variant group -->
+        <div id="variant-section" hidden>
+          <div class="section-header">
+            <h3>Variant Group</h3>
+            <span id="variant-count"></span>
+          </div>
+          <div id="variant-list"></div>
+          <p class="hint" style="padding: 0 16px 12px;">These files will all render with the same timing as separate MP4 video layers (v1, v2, v3...).</p>
+        </div>
+
+        <!-- Render button -->
+        <div id="render-section">
+          <button id="btn-render" class="render-btn" disabled>Render MP4</button>
+          <button id="btn-render-variants" class="render-btn variant-render-btn" hidden disabled>Render All Variants</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right panel: tabs -->
+    <aside id="right-panel">
+      <div class="right-panel-tabs">
+        <button class="rp-tab active" data-rp-tab="render">Render Queue</button>
+        <button class="rp-tab" data-rp-tab="srt-timeline">SRT Timeline</button>
+      </div>
+
+      <!-- Render Queue tab -->
+      <div id="rp-render" class="rp-tab-content active">
+        <div id="job-list">
+          <p class="empty-state">No renders yet</p>
+        </div>
+      </div>
+
+      <!-- SRT Timeline tab -->
+      <div id="rp-srt-timeline" class="rp-tab-content" hidden>
+        <div id="srt-tl-header">
+          <span id="srt-tl-cue-count"></span>
+          <input type="text" id="srt-tl-search" class="srt-search" placeholder="Search cues..." />
+        </div>
+        <div id="srt-tl-list"></div>
+        <div id="srt-tl-drop-hint" hidden>
+          Drop segment here to assign start time
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
