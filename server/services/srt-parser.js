@@ -46,10 +46,15 @@ function mapSrtToBeats(srtContent, beatCount) {
  *
  * @param {string} srtContent - Raw SRT file text
  * @param {string[]} beatTexts - Text extracted from each beat in the HTML
+ * @param {object} [opts] - Optional settings
+ * @param {string[]} [opts.beatTypes] - Beat type classification per beat ('speech'|'label'|'data'|'silent')
+ * @param {number} [opts.segStart] - Segment start time in seconds (for interpolation bounds)
+ * @param {number} [opts.segEnd] - Segment end time in seconds (for interpolation bounds)
  * @returns {object} Mapping result with beatTimes, per-beat match info, etc.
  */
-function mapSrtToBeatsIntelligent(srtContent, beatTexts) {
+function mapSrtToBeatsIntelligent(srtContent, beatTexts, opts = {}) {
   const cues = parseSrt(srtContent);
+  const { beatTypes, segStart, segEnd } = opts;
 
   if (!beatTexts || beatTexts.length === 0) {
     // Fall back to dumb mapping
@@ -71,11 +76,22 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts) {
   const mapping = [];
 
   for (let beatIdx = 0; beatIdx < beatTexts.length; beatIdx++) {
+    const beatType = beatTypes ? beatTypes[beatIdx] : null;
+
+    // Skip silent and data beats — they have no speech equivalent
+    if (beatType === 'silent' || beatType === 'data') {
+      mapping.push({ beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null, skipped: beatType });
+      continue;
+    }
+
     const beatText = normalize(beatTexts[beatIdx]);
     if (!beatText) {
       mapping.push({ beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null });
       continue;
     }
+
+    // Adaptive threshold based on beat type
+    const threshold = beatType === 'label' ? 0.08 : 0.15;
 
     let bestIdx = -1;
     let bestScore = 0;
@@ -84,14 +100,28 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts) {
     for (let cueIdx = searchStart; cueIdx < cues.length; cueIdx++) {
       let score = similarity(beatText, cueTexts[cueIdx]);
 
+      // Word-in-cue containment bonus: if the beat text (as a phrase)
+      // appears literally inside the cue text, guarantee a minimum score
+      if (cueTexts[cueIdx].includes(beatText) && beatText.length >= 3) {
+        score = Math.max(score, 0.25);
+      }
+
       // Try combining consecutive cues (beat text might span 2-3 captions)
       if (cueIdx + 1 < cues.length) {
         const combined2 = cueTexts[cueIdx] + ' ' + cueTexts[cueIdx + 1];
-        score = Math.max(score, similarity(beatText, combined2));
+        let combinedScore = similarity(beatText, combined2);
+        if (combined2.includes(beatText) && beatText.length >= 3) {
+          combinedScore = Math.max(combinedScore, 0.25);
+        }
+        score = Math.max(score, combinedScore);
       }
       if (cueIdx + 2 < cues.length) {
         const combined3 = cueTexts[cueIdx] + ' ' + cueTexts[cueIdx + 1] + ' ' + cueTexts[cueIdx + 2];
-        score = Math.max(score, similarity(beatText, combined3));
+        let combinedScore = similarity(beatText, combined3);
+        if (combined3.includes(beatText) && beatText.length >= 3) {
+          combinedScore = Math.max(combinedScore, 0.25);
+        }
+        score = Math.max(score, combinedScore);
       }
 
       if (score > bestScore) {
@@ -100,7 +130,7 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts) {
       }
     }
 
-    if (bestScore >= 0.15 && bestIdx >= 0) {
+    if (bestScore >= threshold && bestIdx >= 0) {
       searchStart = bestIdx + 1; // Next beat must match after this one
       mapping.push({
         beatIdx,
@@ -117,7 +147,7 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts) {
   }
 
   // Build beatTimes from mapping — unmatched beats get interpolated
-  const beatTimes = interpolateMissing(mapping, cues);
+  const beatTimes = interpolateMissing(mapping, cues, segStart, segEnd);
 
   const matchedCount = mapping.filter(m => m.cueIdx !== null).length;
 
@@ -191,9 +221,15 @@ function toBigrams(str) {
 }
 
 /**
- * Fill in beatTimes for unmatched beats by interpolating between matched neighbors.
+ * Fill in beatTimes for unmatched beats by interpolating proportionally
+ * within the segment's time range (or between matched anchors).
+ *
+ * @param {object[]} mapping - Per-beat match results
+ * @param {object[]} cues - Parsed SRT cues
+ * @param {number} [segStart] - Segment start time (seconds), used as floor
+ * @param {number} [segEnd] - Segment end time (seconds), used as ceiling
  */
-function interpolateMissing(mapping, cues) {
+function interpolateMissing(mapping, cues, segStart, segEnd) {
   const times = new Array(mapping.length).fill(null);
 
   // Fill matched times
@@ -203,7 +239,27 @@ function interpolateMissing(mapping, cues) {
     }
   }
 
-  // Interpolate gaps
+  // Derive fallback bounds from cues if segment bounds not provided
+  const floorTime = segStart != null ? segStart : (cues.length > 0 ? cues[0].startTime : 0);
+  const ceilTime = segEnd != null ? segEnd : (cues.length > 0 ? cues[cues.length - 1].endTime : mapping.length * 2);
+
+  // Check if we have any anchors at all
+  const hasAnchors = times.some(t => t !== null);
+
+  if (!hasAnchors) {
+    // Zero matches — distribute all beats evenly across the segment range
+    const total = times.length;
+    for (let i = 0; i < total; i++) {
+      if (total === 1) {
+        times[i] = (floorTime + ceilTime) / 2;
+      } else {
+        times[i] = floorTime + (i / (total - 1)) * (ceilTime - floorTime);
+      }
+    }
+    return times.map(t => Math.round(t * 1000) / 1000);
+  }
+
+  // Interpolate gaps between, before, and after anchors
   for (let i = 0; i < times.length; i++) {
     if (times[i] !== null) continue;
 
@@ -217,19 +273,22 @@ function interpolateMissing(mapping, cues) {
     }
 
     if (prevIdx >= 0 && nextIdx >= 0) {
-      // Linear interpolation
+      // Between two anchors — linear interpolation
       const span = nextIdx - prevIdx;
       const frac = (i - prevIdx) / span;
       times[i] = times[prevIdx] + frac * (times[nextIdx] - times[prevIdx]);
     } else if (prevIdx >= 0) {
-      // Extrapolate forward (add 2s per beat as default gap)
-      times[i] = times[prevIdx] + (i - prevIdx) * 2;
+      // After last anchor — space forward toward segment end
+      const unmatchedAfter = times.length - 1 - prevIdx;
+      const availableTime = ceilTime - times[prevIdx];
+      const step = unmatchedAfter > 0 ? availableTime / unmatchedAfter : 0;
+      times[i] = times[prevIdx] + (i - prevIdx) * step;
     } else if (nextIdx >= 0) {
-      // Extrapolate backward
-      times[i] = Math.max(0, times[nextIdx] - (nextIdx - i) * 2);
-    } else {
-      // No anchors at all — space evenly at 2s intervals
-      times[i] = i * 2;
+      // Before first anchor — space backward from first anchor using segment start as floor
+      const unmatchedBefore = nextIdx;
+      const availableTime = times[nextIdx] - floorTime;
+      const step = unmatchedBefore > 0 ? availableTime / unmatchedBefore : 0;
+      times[i] = Math.max(floorTime, times[nextIdx] - (nextIdx - i) * step);
     }
   }
 

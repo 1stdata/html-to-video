@@ -37,8 +37,8 @@ function remapBeatsToSegmentCues(fileName, analysis) {
   const srtContent = fs.readFileSync(srtCacheFile, 'utf-8');
   const allCues = parseSrt(srtContent);
 
-  // Filter cues to just this segment's time range (with a small buffer)
-  const buffer = 2; // 2s buffer on each side
+  // Filter cues to just this segment's time range (with a buffer)
+  const buffer = 5; // 5s buffer on each side to catch slightly-off segment boundaries
   const segCues = allCues.filter(c =>
     c.startTime >= (segMatch.startTime - buffer) &&
     c.startTime <= (segMatch.endTime + buffer)
@@ -53,8 +53,13 @@ function remapBeatsToSegmentCues(fileName, analysis) {
     return `${i + 1}\n${startTs} --> ${endTs}\n${c.text}\n`;
   }).join('\n');
 
-  // Run intelligent matching with beat texts against this narrow SRT range
-  const result = mapSrtToBeatsIntelligent(miniSrt, analysis.beatTexts);
+  // Run intelligent matching with beat texts against this narrow SRT range,
+  // passing segment bounds for smarter interpolation and beat types to skip unmatchable beats
+  const result = mapSrtToBeatsIntelligent(miniSrt, analysis.beatTexts, {
+    beatTypes: analysis.beatTypes || null,
+    segStart: segMatch.startTime,
+    segEnd: segMatch.endTime,
+  });
 
   if (result.beatTimes && result.beatTimes.length > 0) {
     const updatedTiming = {

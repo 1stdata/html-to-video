@@ -144,9 +144,12 @@ async function analyzeHtml(filePath) {
     const domEstimate = domInfo.stepItemCount + Math.max(0, domInfo.slideCount - 1);
     const beatCount = clickCount > 0 ? clickCount : domEstimate;
 
+    const beatTypes = beatTexts.map(t => classifyBeat(t));
+
     return {
       beatCount,
       beatTexts,
+      beatTypes,
       beatThumbs,
       clickTarget: clickSelector,
       domEstimate,
@@ -193,4 +196,27 @@ async function getRevealedTexts(page) {
   });
 }
 
-module.exports = { analyzeHtml };
+/**
+ * Classify a beat's text to determine matching strategy.
+ * - 'speech'  — 4+ words or >20 chars, natural language (matchable to SRT)
+ * - 'label'   — 1-3 words, short callout or title (try to match, lower threshold)
+ * - 'data'    — mostly numbers/stats (don't match, interpolate)
+ * - 'silent'  — empty or whitespace only (don't match, interpolate)
+ */
+function classifyBeat(text) {
+  if (!text || !text.trim()) return 'silent';
+
+  const trimmed = text.trim();
+
+  // Count how much of the text is digits/symbols vs letters
+  const digits = (trimmed.match(/\d/g) || []).length;
+  const letters = (trimmed.match(/[a-zA-Z]/g) || []).length;
+  if (digits > 0 && digits >= letters) return 'data';
+
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length >= 4 || trimmed.length > 20) return 'speech';
+
+  return 'label';
+}
+
+module.exports = { analyzeHtml, classifyBeat };
