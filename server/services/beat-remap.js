@@ -37,11 +37,14 @@ function remapBeatsToSegmentCues(fileName, analysis) {
   const srtContent = fs.readFileSync(srtCacheFile, 'utf-8');
   const allCues = parseSrt(srtContent);
 
-  // Filter cues to just this segment's time range (with a buffer)
-  const buffer = 5; // 5s buffer on each side to catch slightly-off segment boundaries
+  // Filter cues to just this segment's time range (asymmetric buffer:
+  // wider before to catch segment-start context, tight after to avoid
+  // matching cues that belong to the next segment)
+  const bufferBefore = 5;
+  const bufferAfter = 1;
   const segCues = allCues.filter(c =>
-    c.startTime >= (segMatch.startTime - buffer) &&
-    c.startTime <= (segMatch.endTime + buffer)
+    c.startTime >= (segMatch.startTime - bufferBefore) &&
+    c.startTime <= (segMatch.endTime + bufferAfter)
   );
 
   if (segCues.length === 0) return;

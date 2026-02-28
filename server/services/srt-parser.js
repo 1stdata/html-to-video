@@ -90,20 +90,25 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts, opts = {}) {
       continue;
     }
 
-    // Adaptive threshold based on beat type
-    const threshold = beatType === 'label' ? 0.08 : 0.15;
+    // Labels only match if the full phrase is contained in a cue (containment bonus).
+    // Without containment, a single common word like "more" would match everywhere.
+    const threshold = beatType === 'label' ? 0.15 : 0.15;
+    const isLabel = beatType === 'label';
 
     let bestIdx = -1;
     let bestScore = 0;
+    let bestHasContainment = false;
 
     // Only search cues AFTER the last matched cue
     for (let cueIdx = searchStart; cueIdx < cues.length; cueIdx++) {
       let score = similarity(beatText, cueTexts[cueIdx]);
+      let hasContainment = false;
 
       // Word-in-cue containment bonus: if the beat text (as a phrase)
       // appears literally inside the cue text, guarantee a minimum score
       if (cueTexts[cueIdx].includes(beatText) && beatText.length >= 3) {
         score = Math.max(score, 0.25);
+        hasContainment = true;
       }
 
       // Try combining consecutive cues (beat text might span 2-3 captions)
@@ -112,6 +117,7 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts, opts = {}) {
         let combinedScore = similarity(beatText, combined2);
         if (combined2.includes(beatText) && beatText.length >= 3) {
           combinedScore = Math.max(combinedScore, 0.25);
+          hasContainment = true;
         }
         score = Math.max(score, combinedScore);
       }
@@ -120,6 +126,7 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts, opts = {}) {
         let combinedScore = similarity(beatText, combined3);
         if (combined3.includes(beatText) && beatText.length >= 3) {
           combinedScore = Math.max(combinedScore, 0.25);
+          hasContainment = true;
         }
         score = Math.max(score, combinedScore);
       }
@@ -127,7 +134,14 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts, opts = {}) {
       if (score > bestScore) {
         bestScore = score;
         bestIdx = cueIdx;
+        bestHasContainment = hasContainment;
       }
+    }
+
+    // For labels, only accept if the full phrase was contained in a cue
+    // (prevents single common words like "more" from false-matching)
+    if (isLabel && !bestHasContainment) {
+      bestScore = 0;
     }
 
     if (bestScore >= threshold && bestIdx >= 0) {
@@ -232,16 +246,16 @@ function toBigrams(str) {
 function interpolateMissing(mapping, cues, segStart, segEnd) {
   const times = new Array(mapping.length).fill(null);
 
-  // Fill matched times
-  for (const m of mapping) {
-    if (m.cueIdx !== null) {
-      times[m.beatIdx] = m.time;
-    }
-  }
-
   // Derive fallback bounds from cues if segment bounds not provided
   const floorTime = segStart != null ? segStart : (cues.length > 0 ? cues[0].startTime : 0);
   const ceilTime = segEnd != null ? segEnd : (cues.length > 0 ? cues[cues.length - 1].endTime : mapping.length * 2);
+
+  // Fill matched times, clamping to segment bounds to prevent anchors outside the range
+  for (const m of mapping) {
+    if (m.cueIdx !== null) {
+      times[m.beatIdx] = Math.max(floorTime, Math.min(ceilTime, m.time));
+    }
+  }
 
   // Check if we have any anchors at all
   const hasAnchors = times.some(t => t !== null);
@@ -281,7 +295,8 @@ function interpolateMissing(mapping, cues, segStart, segEnd) {
       // After last anchor — space forward toward segment end
       const unmatchedAfter = times.length - 1 - prevIdx;
       const availableTime = ceilTime - times[prevIdx];
-      const step = unmatchedAfter > 0 ? availableTime / unmatchedAfter : 0;
+      // Use at least 0.5s step so beats don't pile up when anchor is at/near ceiling
+      const step = unmatchedAfter > 0 ? Math.max(0.5, availableTime / unmatchedAfter) : 0.5;
       times[i] = times[prevIdx] + (i - prevIdx) * step;
     } else if (nextIdx >= 0) {
       // Before first anchor — space backward from first anchor using segment start as floor
@@ -289,6 +304,13 @@ function interpolateMissing(mapping, cues, segStart, segEnd) {
       const availableTime = times[nextIdx] - floorTime;
       const step = unmatchedBefore > 0 ? availableTime / unmatchedBefore : 0;
       times[i] = Math.max(floorTime, times[nextIdx] - (nextIdx - i) * step);
+    }
+  }
+
+  // Enforce monotonicity — each beat time must be >= the previous one
+  for (let i = 1; i < times.length; i++) {
+    if (times[i] < times[i - 1]) {
+      times[i] = times[i - 1] + 0.1; // nudge forward by 100ms
     }
   }
 
