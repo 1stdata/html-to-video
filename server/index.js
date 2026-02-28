@@ -47,6 +47,7 @@ app.use('/api/files', require('./routes/files'));
 app.use('/api/timing', require('./routes/timing'));
 app.use('/api/render', require('./routes/render'));
 app.use('/api/import', require('./routes/import'));
+app.use('/api/export', require('./routes/export'));
 
 // Watch input folder for new files
 const watcher = chokidar.watch(config.INPUT_DIR, {
