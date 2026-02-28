@@ -446,6 +446,17 @@ btnRenderAllVariants.addEventListener('click', async () => {
   }
 });
 
+// ─── Export XML ─────────────────────────────────────────────────
+
+const btnExportXml = document.getElementById('btn-export-xml');
+
+btnExportXml.addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = '/api/export/premiere-xml';
+  a.download = 'timeline.xml';
+  a.click();
+});
+
 // ─── Import Project ─────────────────────────────────────────────
 
 const importModal = document.getElementById('import-modal');

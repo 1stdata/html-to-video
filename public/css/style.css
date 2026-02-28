@@ -1476,6 +1476,15 @@ main {
   filter: brightness(1.1);
 }
 
+.pipeline-btn.export-btn {
+  background: #f59e0b;
+  color: white;
+}
+
+.pipeline-btn.export-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
 #pipeline-status {
   display: flex;
   flex-direction: column;
