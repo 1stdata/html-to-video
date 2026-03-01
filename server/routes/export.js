@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const config = require('../config');
 
+const { parseSrt } = require('../services/srt-parser');
+
 const MIN_CLIP_DURATION_SEC = 1.0;
 
 // Parse timeline offset and option number from rendered filename
@@ -168,7 +170,48 @@ router.get('/premiere-xml', (req, res) => {
         </track>`);
   }
 
-  // 8. Calculate total sequence duration
+  // 8. Build SRT captions track
+  const srtCacheFile = path.join(config.DATA_DIR, 'project-srt.cache');
+  let srtTrackXml = '';
+  if (fs.existsSync(srtCacheFile)) {
+    const srtContent = fs.readFileSync(srtCacheFile, 'utf-8');
+    const cues = parseSrt(srtContent);
+
+    if (cues.length > 0) {
+      const captionItems = cues.map((cue, i) => {
+        const startFrame = Math.round(cue.startTime * fps);
+        const endFrame = Math.round(cue.endTime * fps);
+        const durationFrames = endFrame - startFrame;
+        return `
+          <generatoritem id="caption-${i + 1}">
+            <name>${escapeXml(cue.text)}</name>
+            <duration>${durationFrames}</duration>
+            <rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>
+            <start>${startFrame}</start>
+            <end>${endFrame}</end>
+            <in>0</in>
+            <out>${durationFrames}</out>
+            <effect>
+              <name>Text</name>
+              <effectid>Text</effectid>
+              <effecttype>generator</effecttype>
+              <mediatype>video</mediatype>
+              <parameter>
+                <parameterid>str</parameterid>
+                <name>Text</name>
+                <value>${escapeXml(cue.text)}</value>
+              </parameter>
+            </effect>
+          </generatoritem>`;
+      });
+
+      srtTrackXml = `
+        <track><!-- SRT Captions -->${captionItems.join('')}
+        </track>`;
+    }
+  }
+
+  // 9. Calculate total sequence duration
   const allEndFrames = [];
   for (const clip of normalClips) {
     allEndFrames.push(Math.round((clip.offsetSec + clip.durationSec) * fps));
@@ -207,7 +250,7 @@ router.get('/premiere-xml', (req, res) => {
             <width>${width}</width>
             <height>${height}</height>
           </samplecharacteristics>
-        </format>${trackXmls.join('')}
+        </format>${trackXmls.join('')}${srtTrackXml}
       </video>
     </media>
   </sequence>
