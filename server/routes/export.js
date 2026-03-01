@@ -82,8 +82,7 @@ router.get('/premiere-xml', (req, res) => {
   const width = config.WIDTH;
   const height = config.HEIGHT;
 
-  // Build file definitions and clipitems
-  const fileDefs = [];
+  // Build clipitems with inline file definitions
   const clipItems = [];
 
   clips.forEach((clip, i) => {
@@ -92,22 +91,6 @@ router.get('/premiere-xml', (req, res) => {
     const durationFrames = Math.round(clip.durationSec * fps);
     const endFrame = startFrame + durationFrames;
     const fileUrl = `file://localhost${clip.filePath}`;
-
-    fileDefs.push(`
-        <file id="${fileId}">
-          <name>${escapeXml(clip.filename)}</name>
-          <pathurl>${escapeXml(fileUrl)}</pathurl>
-          <rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>
-          <duration>${durationFrames}</duration>
-          <media>
-            <video>
-              <samplecharacteristics>
-                <width>${width}</width>
-                <height>${height}</height>
-              </samplecharacteristics>
-            </video>
-          </media>
-        </file>`);
 
     clipItems.push(`
           <clipitem id="clip-${i + 1}">
@@ -118,7 +101,20 @@ router.get('/premiere-xml', (req, res) => {
             <end>${endFrame}</end>
             <in>0</in>
             <out>${durationFrames}</out>
-            <file id="${fileId}"/>
+            <file id="${fileId}">
+              <name>${escapeXml(clip.filename)}</name>
+              <pathurl>${escapeXml(fileUrl)}</pathurl>
+              <rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>
+              <duration>${durationFrames}</duration>
+              <media>
+                <video>
+                  <samplecharacteristics>
+                    <width>${width}</width>
+                    <height>${height}</height>
+                  </samplecharacteristics>
+                </video>
+              </media>
+            </file>
           </clipitem>`);
   });
 
@@ -136,6 +132,12 @@ router.get('/premiere-xml', (req, res) => {
       <timebase>${fps}</timebase>
       <ntsc>FALSE</ntsc>
     </rate>
+    <timecode>
+      <rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>
+      <string>00:00:00:00</string>
+      <frame>0</frame>
+      <displayformat>NDF</displayformat>
+    </timecode>
     <media>
       <video>
         <format>
