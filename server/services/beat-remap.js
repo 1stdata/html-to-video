@@ -11,28 +11,49 @@ const { mapSrtToBeatsIntelligent, parseSrt } = require('./srt-parser');
  */
 function remapBeatsToSegmentCues(fileName, analysis) {
   const timingFile = path.join(config.DATA_DIR, `${fileName}.timing.json`);
-  if (!fs.existsSync(timingFile)) return;
+  if (!fs.existsSync(timingFile)) {
+    console.log(`[beat-remap] SKIP ${fileName}: no timing file`);
+    return;
+  }
 
   const timing = JSON.parse(fs.readFileSync(timingFile, 'utf-8'));
-  if (timing.source !== 'srt-project') return;
-  if (!analysis.beatTexts || analysis.beatTexts.length === 0) return;
+  if (timing.source !== 'srt-project') {
+    console.log(`[beat-remap] SKIP ${fileName}: source is '${timing.source}', not 'srt-project'`);
+    return;
+  }
+  if (!analysis.beatTexts || analysis.beatTexts.length === 0) {
+    console.log(`[beat-remap] SKIP ${fileName}: no beatTexts in analysis`);
+    return;
+  }
 
   // Load the project to find the SRT file and segment cue range
   const projectFile = path.join(config.DATA_DIR, 'project.json');
-  if (!fs.existsSync(projectFile)) return;
+  if (!fs.existsSync(projectFile)) {
+    console.log(`[beat-remap] SKIP ${fileName}: no project.json`);
+    return;
+  }
 
   const project = JSON.parse(fs.readFileSync(projectFile, 'utf-8'));
-  if (!project.srtMatch) return;
+  if (!project.srtMatch) {
+    console.log(`[beat-remap] SKIP ${fileName}: no srtMatch in project`);
+    return;
+  }
 
   // Find this file's segment match
   const segMatch = project.srtMatch.segmentMatches.find(
     m => m.htmlFiles && m.htmlFiles.includes(fileName)
   );
-  if (!segMatch || segMatch.startTime == null) return;
+  if (!segMatch || segMatch.startTime == null) {
+    console.log(`[beat-remap] SKIP ${fileName}: no segment match or no startTime`);
+    return;
+  }
 
   // Load the original SRT content from the project source
   const srtCacheFile = path.join(config.DATA_DIR, 'project-srt.cache');
-  if (!fs.existsSync(srtCacheFile)) return;
+  if (!fs.existsSync(srtCacheFile)) {
+    console.log(`[beat-remap] SKIP ${fileName}: no SRT cache file`);
+    return;
+  }
 
   const srtContent = fs.readFileSync(srtCacheFile, 'utf-8');
   const allCues = parseSrt(srtContent);
@@ -47,7 +68,10 @@ function remapBeatsToSegmentCues(fileName, analysis) {
     c.startTime <= (segMatch.endTime + bufferAfter)
   );
 
-  if (segCues.length === 0) return;
+  if (segCues.length === 0) {
+    console.log(`[beat-remap] SKIP ${fileName}: no SRT cues in segment range ${segMatch.startTime}-${segMatch.endTime}`);
+    return;
+  }
 
   // Build a mini-SRT from just these cues
   const miniSrt = segCues.map((c, i) => {
@@ -75,6 +99,9 @@ function remapBeatsToSegmentCues(fileName, analysis) {
       refinedAt: new Date().toISOString(),
     };
     fs.writeFileSync(timingFile, JSON.stringify(updatedTiming, null, 2));
+    console.log(`[beat-remap] SUCCESS ${fileName}: ${result.matchedCount}/${result.beatCount} beats matched, ${segCues.length} cues, method=${result.method}`);
+  } else {
+    console.log(`[beat-remap] FAIL ${fileName}: no beat times produced from matching`);
   }
 }
 

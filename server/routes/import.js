@@ -307,6 +307,15 @@ router.post('/match-srt', srtUpload.single('srt'), (req, res) => {
         const timingFile = path.join(config.DATA_DIR, `${htmlFile}.timing.json`);
         fs.writeFileSync(timingFile, JSON.stringify(timing, null, 2));
         timedFiles++;
+
+        // Opportunistic refinement: if analysis already exists, immediately
+        // refine timing with word-level SRT matching instead of waiting for analyze-all
+        if (beatCount > 0) {
+          const analysisData = JSON.parse(fs.readFileSync(analysisFile, 'utf-8'));
+          if (analysisData.beatTexts && analysisData.beatTexts.length > 0) {
+            remapBeatsToSegmentCues(htmlFile, analysisData);
+          }
+        }
       }
     }
 

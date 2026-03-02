@@ -71,66 +71,99 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts, opts = {}) {
 
   const cueTexts = cues.map(c => normalize(c.text));
 
-  // Forward-only matching: each beat's match must come after the previous one
+  // ── Helper: word-level containment check for label beats ──
+  function labelWordMatch(beatText, targetText) {
+    const beatCW = contentWordsOf(beatText);
+    const targetWords = new Set(targetText.split(/\s+/));
+    const matched = beatCW.filter(w =>
+      targetWords.has(w) || [...targetWords].some(cw =>
+        (w.length >= 4 && cw.length >= 4) && (cw.includes(w) || w.includes(cw))
+      )
+    );
+    return matched.length > 0
+      ? { has: true, score: 0.20 + matched.length * 0.05 }
+      : { has: false, score: 0 };
+  }
+
+  // ── Scoring helper: score a beat against a single cue (+ consecutive combos) ──
+  function scoreCue(beatText, isLabel, cueIdx) {
+    let score = similarity(beatText, cueTexts[cueIdx]);
+    let hasContainment = false;
+
+    // Phrase-level containment: full beat text appears in cue
+    if (cueTexts[cueIdx].includes(beatText) && beatText.length >= 3) {
+      score = Math.max(score, 0.25);
+      hasContainment = true;
+    }
+    // Word-level containment for labels: any content word appears in cue
+    if (isLabel && !hasContainment) {
+      const wm = labelWordMatch(beatText, cueTexts[cueIdx]);
+      if (wm.has) { hasContainment = true; score = Math.max(score, wm.score); }
+    }
+
+    // Combined 2 consecutive cues
+    if (cueIdx + 1 < cues.length) {
+      const combined2 = cueTexts[cueIdx] + ' ' + cueTexts[cueIdx + 1];
+      let cs = similarity(beatText, combined2);
+      if (combined2.includes(beatText) && beatText.length >= 3) {
+        cs = Math.max(cs, 0.25);
+        hasContainment = true;
+      }
+      if (isLabel && !hasContainment) {
+        const wm = labelWordMatch(beatText, combined2);
+        if (wm.has) { hasContainment = true; cs = Math.max(cs, wm.score); }
+      }
+      score = Math.max(score, cs);
+    }
+
+    // Combined 3 consecutive cues
+    if (cueIdx + 2 < cues.length) {
+      const combined3 = cueTexts[cueIdx] + ' ' + cueTexts[cueIdx + 1] + ' ' + cueTexts[cueIdx + 2];
+      let cs = similarity(beatText, combined3);
+      if (combined3.includes(beatText) && beatText.length >= 3) {
+        cs = Math.max(cs, 0.25);
+        hasContainment = true;
+      }
+      if (isLabel && !hasContainment) {
+        const wm = labelWordMatch(beatText, combined3);
+        if (wm.has) { hasContainment = true; cs = Math.max(cs, wm.score); }
+      }
+      score = Math.max(score, cs);
+    }
+
+    return { score, hasContainment };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // Pass 1: Anchor pass — confident matches only, forward-only
+  // ══════════════════════════════════════════════════════════════════
+  const ANCHOR_THRESHOLD = 0.35;
+  const FILL_THRESHOLD = 0.20;
   let searchStart = 0;
-  const mapping = [];
+  const mapping = new Array(beatTexts.length).fill(null);
 
   for (let beatIdx = 0; beatIdx < beatTexts.length; beatIdx++) {
     const beatType = beatTypes ? beatTypes[beatIdx] : null;
 
     // Skip silent and data beats — they have no speech equivalent
     if (beatType === 'silent' || beatType === 'data') {
-      mapping.push({ beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null, skipped: beatType });
+      mapping[beatIdx] = { beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null, skipped: beatType };
       continue;
     }
 
     const beatText = normalize(beatTexts[beatIdx]);
     if (!beatText) {
-      mapping.push({ beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null });
+      mapping[beatIdx] = { beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null };
       continue;
     }
 
-    // Labels only match if the full phrase is contained in a cue (containment bonus).
-    // Without containment, a single common word like "more" would match everywhere.
-    const threshold = beatType === 'label' ? 0.15 : 0.15;
     const isLabel = beatType === 'label';
-
     let bestIdx = -1;
     let bestScore = 0;
     let bestHasContainment = false;
 
-    // Only search cues AFTER the last matched cue
     for (let cueIdx = searchStart; cueIdx < cues.length; cueIdx++) {
-      let score = similarity(beatText, cueTexts[cueIdx]);
-      let hasContainment = false;
-
-      // Word-in-cue containment bonus: if the beat text (as a phrase)
-      // appears literally inside the cue text, guarantee a minimum score
-      if (cueTexts[cueIdx].includes(beatText) && beatText.length >= 3) {
-        score = Math.max(score, 0.25);
-        hasContainment = true;
-      }
-
-      // Try combining consecutive cues (beat text might span 2-3 captions)
-      if (cueIdx + 1 < cues.length) {
-        const combined2 = cueTexts[cueIdx] + ' ' + cueTexts[cueIdx + 1];
-        let combinedScore = similarity(beatText, combined2);
-        if (combined2.includes(beatText) && beatText.length >= 3) {
-          combinedScore = Math.max(combinedScore, 0.25);
-          hasContainment = true;
-        }
-        score = Math.max(score, combinedScore);
-      }
-      if (cueIdx + 2 < cues.length) {
-        const combined3 = cueTexts[cueIdx] + ' ' + cueTexts[cueIdx + 1] + ' ' + cueTexts[cueIdx + 2];
-        let combinedScore = similarity(beatText, combined3);
-        if (combined3.includes(beatText) && beatText.length >= 3) {
-          combinedScore = Math.max(combinedScore, 0.25);
-          hasContainment = true;
-        }
-        score = Math.max(score, combinedScore);
-      }
-
+      const { score, hasContainment } = scoreCue(beatText, isLabel, cueIdx);
       if (score > bestScore) {
         bestScore = score;
         bestIdx = cueIdx;
@@ -138,30 +171,108 @@ function mapSrtToBeatsIntelligent(srtContent, beatTexts, opts = {}) {
       }
     }
 
-    // For labels, only accept if the full phrase was contained in a cue
-    // (prevents single common words like "more" from false-matching)
+    // Labels require containment to match
     if (isLabel && !bestHasContainment) {
       bestScore = 0;
     }
 
-    if (bestScore >= threshold && bestIdx >= 0) {
-      searchStart = bestIdx + 1; // Next beat must match after this one
-      mapping.push({
+    if (bestScore >= ANCHOR_THRESHOLD && bestIdx >= 0) {
+      searchStart = bestIdx + 1;
+      const trigger = findTriggerWordTime(beatTexts[beatIdx], cues[bestIdx], beatType);
+      mapping[beatIdx] = {
         beatIdx,
         cueIdx: bestIdx,
         cueId: cues[bestIdx].index,
         score: Math.round(bestScore * 100),
         beatText: beatTexts[beatIdx],
         cueText: cues[bestIdx].text,
-        time: cues[bestIdx].startTime,
-      });
+        time: trigger.time,
+        triggerWord: trigger.triggerWord,
+        triggerMethod: trigger.method,
+        anchor: true,
+      };
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // Pass 2: Fill pass — unmatched beats search within bounded ranges
+  // ══════════════════════════════════════════════════════════════════
+  for (let beatIdx = 0; beatIdx < beatTexts.length; beatIdx++) {
+    if (mapping[beatIdx]) continue; // already anchored or skipped
+
+    const beatType = beatTypes ? beatTypes[beatIdx] : null;
+    const beatText = normalize(beatTexts[beatIdx]);
+    if (!beatText) {
+      mapping[beatIdx] = { beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null };
+      continue;
+    }
+
+    const isLabel = beatType === 'label';
+
+    // Find bounding anchors (nearest anchored beats before and after)
+    let prevAnchorCue = -1;
+    for (let j = beatIdx - 1; j >= 0; j--) {
+      if (mapping[j] && mapping[j].cueIdx !== null && mapping[j].anchor) {
+        prevAnchorCue = mapping[j].cueIdx;
+        break;
+      }
+    }
+    let nextAnchorCue = cues.length;
+    for (let j = beatIdx + 1; j < beatTexts.length; j++) {
+      if (mapping[j] && mapping[j].cueIdx !== null && mapping[j].anchor) {
+        nextAnchorCue = mapping[j].cueIdx;
+        break;
+      }
+    }
+
+    // Search range: between anchors (exclusive of anchor cue positions)
+    const rangeStart = prevAnchorCue + 1;
+    const rangeEnd = nextAnchorCue - 1;
+
+    if (rangeStart > rangeEnd) {
+      mapping[beatIdx] = { beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null };
+      continue;
+    }
+
+    let bestIdx = -1;
+    let bestScore = 0;
+    let bestHasContainment = false;
+
+    for (let cueIdx = rangeStart; cueIdx <= rangeEnd; cueIdx++) {
+      const { score, hasContainment } = scoreCue(beatText, isLabel, cueIdx);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = cueIdx;
+        bestHasContainment = hasContainment;
+      }
+    }
+
+    // Labels require containment to match
+    if (isLabel && !bestHasContainment) {
+      bestScore = 0;
+    }
+
+    if (bestScore >= FILL_THRESHOLD && bestIdx >= 0) {
+      const trigger = findTriggerWordTime(beatTexts[beatIdx], cues[bestIdx], beatType);
+      mapping[beatIdx] = {
+        beatIdx,
+        cueIdx: bestIdx,
+        cueId: cues[bestIdx].index,
+        score: Math.round(bestScore * 100),
+        beatText: beatTexts[beatIdx],
+        cueText: cues[bestIdx].text,
+        time: trigger.time,
+        triggerWord: trigger.triggerWord,
+        triggerMethod: trigger.method,
+        anchor: false,
+      };
     } else {
-      mapping.push({ beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null });
+      mapping[beatIdx] = { beatIdx, cueIdx: null, score: 0, beatText: beatTexts[beatIdx], cueText: null };
     }
   }
 
   // Build beatTimes from mapping — unmatched beats get interpolated
-  const beatTimes = interpolateMissing(mapping, cues, segStart, segEnd);
+  const beatTimes = interpolateMissing(mapping, cues, segStart, segEnd, beatTypes);
 
   const matchedCount = mapping.filter(m => m.cueIdx !== null).length;
 
@@ -237,13 +348,15 @@ function toBigrams(str) {
 /**
  * Fill in beatTimes for unmatched beats by interpolating proportionally
  * within the segment's time range (or between matched anchors).
+ * Enforces minimum intervals to prevent rapid-fire clicking.
  *
  * @param {object[]} mapping - Per-beat match results
  * @param {object[]} cues - Parsed SRT cues
  * @param {number} [segStart] - Segment start time (seconds), used as floor
  * @param {number} [segEnd] - Segment end time (seconds), used as ceiling
+ * @param {string[]} [beatTypes] - Per-beat type classification for interval enforcement
  */
-function interpolateMissing(mapping, cues, segStart, segEnd) {
+function interpolateMissing(mapping, cues, segStart, segEnd, beatTypes) {
   const times = new Array(mapping.length).fill(null);
 
   // Derive fallback bounds from cues if segment bounds not provided
@@ -311,6 +424,31 @@ function interpolateMissing(mapping, cues, segStart, segEnd) {
   for (let i = 1; i < times.length; i++) {
     if (times[i] < times[i - 1]) {
       times[i] = times[i - 1] + 0.1; // nudge forward by 100ms
+    }
+  }
+
+  // Enforce minimum intervals to prevent rapid-fire clicking
+  if (beatTypes) {
+    for (let i = 1; i < times.length; i++) {
+      const prevType = beatTypes[i - 1] || 'speech';
+      const currType = beatTypes[i] || 'speech';
+
+      // Label-to-label allows tighter stacking (0.4s) for visual layering
+      // Everything else gets a 1.2s minimum to match natural speech pacing
+      const minInterval = (prevType === 'label' && currType === 'label') ? 0.4 : 1.2;
+
+      const gap = times[i] - times[i - 1];
+      if (gap < minInterval) {
+        times[i] = times[i - 1] + minInterval;
+      }
+    }
+  }
+
+  // Clamp to segment end so beats don't overflow
+  const maxTime = segEnd != null ? segEnd : ceilTime;
+  for (let i = 0; i < times.length; i++) {
+    if (times[i] > maxTime) {
+      times[i] = maxTime;
     }
   }
 
@@ -569,4 +707,165 @@ function interpolateSegmentTiming(matches) {
   }
 }
 
-module.exports = { parseSrt, mapSrtToBeats, mapSrtToBeatsIntelligent, mapSrtToSegments, timeToSeconds };
+// ── Stop words for trigger-word extraction ──
+const STOP_WORDS = new Set([
+  'the', 'a', 'an', 'is', 'it', 'in', 'on', 'to', 'of', 'and', 'or', 'but',
+  'that', 'this', 'with', 'for', 'not', 'are', 'was', 'be', 'has', 'had',
+  'do', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may',
+  'i', 'you', 'he', 'she', 'we', 'they', 'my', 'your', 'his', 'her', 'our',
+  'their', 'its', 'if', 'so', 'at', 'by', 'from', 'up', 'out', 'no', 'yes',
+  'just', 'all', 'more', 'some', 'than', 'then', 'when', 'what', 'how',
+  'about', 'into', 'over', 'after', 'before', 'between', 'through',
+  'very', 'most', 'much', 'many', 'also', 'even', 'still', 'already',
+  'here', 'there', 'where', 'why', 'who', 'which', 'each', 'every',
+  'any', 'both', 'few', 'own', 'other', 'such', 'only', 'same',
+  'now', 'get', 'got', 'like', 'make', 'made', 'take', 'took',
+  'come', 'came', 'go', 'went', 'see', 'saw', 'know', 'knew',
+  'think', 'say', 'said', 'tell', 'told', 'use', 'used',
+]);
+
+/**
+ * Extract content words from normalized text (length > 2, not stop words).
+ */
+function contentWordsOf(text) {
+  return normalize(text).split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w));
+}
+
+/**
+ * Estimate per-word timestamps within a single SRT cue by distributing
+ * words proportionally across the cue duration based on character position.
+ *
+ * @param {{ startTime: number, endTime: number, text: string }} cue
+ * @returns {{ word: string, normalizedWord: string, time: number }[]}
+ */
+function estimateWordTimings(cue) {
+  const words = cue.text.replace(/<[^>]*>/g, '').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const duration = cue.endTime - cue.startTime;
+  if (duration <= 0 || words.length === 1) {
+    return words.map(w => ({
+      word: w,
+      normalizedWord: normalize(w),
+      time: cue.startTime,
+    }));
+  }
+
+  // Total character length (sum of all word lengths)
+  const totalChars = words.reduce((sum, w) => sum + w.length, 0);
+  let charPos = 0;
+
+  return words.map(w => {
+    // Place each word's time proportional to its character start position
+    const frac = charPos / totalChars;
+    const time = cue.startTime + frac * duration;
+    charPos += w.length;
+    return {
+      word: w,
+      normalizedWord: normalize(w),
+      time: Math.round(time * 1000) / 1000,
+    };
+  });
+}
+
+/**
+ * Dice coefficient on character bigrams for fuzzy single-word matching.
+ * Returns 0-1 where 1 = identical.
+ */
+function bigramSimilarity(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+
+  const bigramsA = [];
+  const bigramsB = [];
+  for (let i = 0; i < a.length - 1; i++) bigramsA.push(a.slice(i, i + 2));
+  for (let i = 0; i < b.length - 1; i++) bigramsB.push(b.slice(i, i + 2));
+
+  if (bigramsA.length === 0 || bigramsB.length === 0) return 0;
+
+  const setB = new Set(bigramsB);
+  let intersection = 0;
+  for (const bg of bigramsA) {
+    if (setB.has(bg)) intersection++;
+  }
+
+  return (2 * intersection) / (bigramsA.length + bigramsB.length);
+}
+
+/**
+ * Find the estimated time for a beat's trigger word within a matched SRT cue.
+ *
+ * - Speech beats → cue start time (they align with whole cues)
+ * - Label beats → find the last matching content word, return its estimated time
+ * - Data/silent → cue start time (fallback)
+ *
+ * Matching: exact → stem containment (4+ chars) → bigram similarity (>0.6) → fallback
+ *
+ * @param {string} beatText - Raw text extracted from the beat
+ * @param {{ startTime: number, endTime: number, text: string }} cue - Matched SRT cue
+ * @param {string|null} beatType - 'speech'|'label'|'data'|'silent'|null
+ * @returns {{ time: number, triggerWord: string|null, method: string }}
+ */
+function findTriggerWordTime(beatText, cue, beatType) {
+  const fallback = { time: cue.startTime, triggerWord: null, method: 'cue-start' };
+
+  // Speech, data, silent beats → just use cue start
+  if (beatType === 'speech' || beatType === 'data' || beatType === 'silent') {
+    return fallback;
+  }
+
+  // Label beats → find the trigger word
+  const beatWords = normalize(beatText).split(/\s+/).filter(Boolean);
+  // Extract content words (filter stop words)
+  const contentWords = beatWords.filter(w => w.length > 2 && !STOP_WORDS.has(w));
+
+  if (contentWords.length === 0) {
+    return fallback;
+  }
+
+  const wordTimings = estimateWordTimings(cue);
+  if (wordTimings.length === 0) {
+    return fallback;
+  }
+
+  // Find the LAST matching content word in the cue (key concept comes last)
+  let bestMatch = null;
+
+  for (const contentWord of contentWords) {
+    // Search backwards through cue words to find last match
+    for (let i = wordTimings.length - 1; i >= 0; i--) {
+      const cueWord = wordTimings[i].normalizedWord;
+
+      // 1. Exact match
+      if (cueWord === contentWord) {
+        if (!bestMatch || wordTimings[i].time > bestMatch.time) {
+          bestMatch = { time: wordTimings[i].time, triggerWord: wordTimings[i].word, method: 'exact' };
+        }
+        break; // Found exact for this content word, try next content word
+      }
+
+      // 2. Stem containment (4+ chars): does one contain the other?
+      if (contentWord.length >= 4 && (cueWord.includes(contentWord) || contentWord.includes(cueWord)) && cueWord.length >= 4) {
+        if (!bestMatch || wordTimings[i].time > bestMatch.time) {
+          bestMatch = { time: wordTimings[i].time, triggerWord: wordTimings[i].word, method: 'stem' };
+        }
+        break;
+      }
+
+      // 3. Bigram similarity (>0.6)
+      if (contentWord.length >= 4 && cueWord.length >= 4) {
+        const sim = bigramSimilarity(contentWord, cueWord);
+        if (sim > 0.6) {
+          if (!bestMatch || wordTimings[i].time > bestMatch.time) {
+            bestMatch = { time: wordTimings[i].time, triggerWord: wordTimings[i].word, method: 'bigram' };
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return bestMatch || fallback;
+}
+
+module.exports = { parseSrt, mapSrtToBeats, mapSrtToBeatsIntelligent, mapSrtToSegments, timeToSeconds, estimateWordTimings, findTriggerWordTime };
