@@ -408,8 +408,9 @@ function interpolateMissing(mapping, cues, segStart, segEnd, beatTypes) {
       // After last anchor — space forward toward segment end
       const unmatchedAfter = times.length - 1 - prevIdx;
       const availableTime = ceilTime - times[prevIdx];
-      // Use at least 0.5s step so beats don't pile up when anchor is at/near ceiling
-      const step = unmatchedAfter > 0 ? Math.max(0.5, availableTime / unmatchedAfter) : 0.5;
+      // Proportional distribution within available time (no forced minimum —
+      // a forced 0.5s step overflows the segment when anchor is near ceiling)
+      const step = unmatchedAfter > 0 ? availableTime / unmatchedAfter : 0;
       times[i] = times[prevIdx] + (i - prevIdx) * step;
     } else if (nextIdx >= 0) {
       // Before first anchor — space backward from first anchor using segment start as floor
@@ -428,6 +429,8 @@ function interpolateMissing(mapping, cues, segStart, segEnd, beatTypes) {
   }
 
   // Enforce minimum intervals to prevent rapid-fire clicking
+  // Budget-aware: won't push beats past segment end
+  const maxTime = segEnd != null ? segEnd : ceilTime;
   if (beatTypes) {
     for (let i = 1; i < times.length; i++) {
       const prevType = beatTypes[i - 1] || 'speech';
@@ -435,21 +438,81 @@ function interpolateMissing(mapping, cues, segStart, segEnd, beatTypes) {
 
       // Label-to-label allows tighter stacking (0.4s) for visual layering
       // Everything else gets a 1.2s minimum to match natural speech pacing
-      const minInterval = (prevType === 'label' && currType === 'label') ? 0.4 : 1.2;
+      const idealMin = (prevType === 'label' && currType === 'label') ? 0.4 : 1.2;
 
       const gap = times[i] - times[i - 1];
-      if (gap < minInterval) {
-        times[i] = times[i - 1] + minInterval;
+      if (gap < idealMin) {
+        // Budget check: how much time is left for this and remaining beats?
+        const remainingBeats = times.length - i;
+        const timeLeft = maxTime - times[i - 1];
+        const budgetPerBeat = remainingBeats > 0 ? timeLeft / remainingBeats : idealMin;
+
+        // Use the smaller of ideal interval and what budget allows (floor at 0.1s)
+        const effectiveMin = Math.max(0.1, Math.min(idealMin, budgetPerBeat));
+        times[i] = times[i - 1] + effectiveMin;
       }
     }
   }
 
   // Clamp to segment end so beats don't overflow
-  const maxTime = segEnd != null ? segEnd : ceilTime;
   for (let i = 0; i < times.length; i++) {
     if (times[i] > maxTime) {
       times[i] = maxTime;
     }
+  }
+
+  // Redistribute pileups: when beats got clamped to the same time, they get
+  // zero screen time. Scan backward for clusters and spread them into
+  // the available space before the cluster.
+  let pi = times.length - 1;
+  while (pi > 0) {
+    // Find a cluster of beats at the same (or nearly same) time
+    const clusterEnd = pi;
+    while (pi > 0 && times[pi] - times[pi - 1] < 0.05) {
+      pi--;
+    }
+    const clusterStart = pi;
+
+    if (clusterStart === clusterEnd) {
+      pi--;
+      continue; // no cluster here
+    }
+
+    // clusterStart..clusterEnd are piled up — find space to spread into
+    const atTime = times[clusterEnd];
+    let expandStart = clusterStart;
+    let count = clusterEnd - expandStart + 1;
+
+    // Determine initial range
+    let rangeStart = expandStart > 0 ? times[expandStart - 1] : floorTime;
+    let rangeEnd = atTime;
+
+    // If cluster starts at beat 0 (no space before), use full segment range
+    if (expandStart === 0) {
+      rangeStart = floorTime;
+      rangeEnd = maxTime;
+    }
+
+    // If the range is too tight (< 0.3s per beat), expand backward to find room.
+    // This handles cases where the last anchor is near the segment end and
+    // many unmatched beats are crammed into a tiny tail.
+    const MIN_STEP = 0.3;
+    let step = (rangeEnd - rangeStart) / (count + 1);
+    while (step < MIN_STEP && expandStart > 0) {
+      expandStart--;
+      count = clusterEnd - expandStart + 1;
+      rangeStart = expandStart > 0 ? times[expandStart - 1] : floorTime;
+      step = (rangeEnd - rangeStart) / (count + 1);
+    }
+
+    // Redistribute evenly within the range (any positive step is better than pileup)
+    if (step > 0) {
+      for (let j = expandStart; j <= clusterEnd; j++) {
+        times[j] = rangeStart + (j - expandStart + 1) * step;
+      }
+    }
+
+    pi = clusterStart - 1;
   }
 
   return times.map(t => Math.round(t * 1000) / 1000);

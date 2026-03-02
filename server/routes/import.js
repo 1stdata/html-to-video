@@ -626,4 +626,34 @@ async function runAnalyzeAll(project, force, broadcast) {
   });
 }
 
+/**
+ * DELETE /api/import/project — Clear all project data.
+ * Removes project.json, SRT cache, all analysis and timing files.
+ * Does NOT touch source HTML files in the input directory.
+ */
+router.delete('/project', (req, res) => {
+  try {
+    const dataDir = config.DATA_DIR;
+    const files = fs.readdirSync(dataDir);
+    let removed = 0;
+
+    for (const file of files) {
+      const filePath = path.join(dataDir, file);
+      const stat = fs.statSync(filePath);
+      if (stat.isFile()) {
+        fs.unlinkSync(filePath);
+        removed++;
+      } else if (stat.isDirectory()) {
+        fs.rmSync(filePath, { recursive: true });
+        removed++;
+      }
+    }
+
+    res.json({ cleared: true, filesRemoved: removed });
+  } catch (err) {
+    console.error('[clear-project] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
